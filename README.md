@@ -28,6 +28,9 @@ This work is based heavily on:
 
 Written for a AirGradient DIY PRO 4.2 with a SGP41 TVOC module.
 
+The oled_updater/ files is an example python script that can generate screens + push the screens
+to the airgradient OLED.
+
 ---
 
 ## Examples of screens that can be uploaded
