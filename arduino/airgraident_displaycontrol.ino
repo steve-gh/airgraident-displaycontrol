@@ -12,6 +12,14 @@
  *   d0 ... d19 - up to 20 different screens, XBM format / 1024 chars, each bit is a pixel
  *   Recommend 1 screen updated at a time to keep byte count low.
  *
+ *
+ * The codes needs the following libraries installed:
+ * "AirGradient"
+ * “U8g2” by oliver tested with version 2.34.22
+ * "Sensirion I2C SGP41" by Sensation Version 0.1.0
+ * "Sensirion Gas Index Algorithm" by Sensation Version 3.2.2
+ * "Arduino-SHT" by Johannes Winkelmann Version 1.2.2
+ *
  * This work is based heavily on:
  *  Airgradient code: https://github.com/airgradienthq/arduino/blob/master/examples/DIY_PRO_V4_2/
  *  Jeff's airgraident-prometheus: https://github.com/geerlingguy/airgradient-prometheus
@@ -27,6 +35,8 @@
 #include <SensirionI2CSgp41.h>
 #include <VOCGasIndexAlgorithm.h>
 
+#include "SHTSensor.h"
+
 #include <U8g2lib.h>
 #include <WiFiClient.h>
 
@@ -35,6 +45,8 @@ AirGradient ag = AirGradient();
 SensirionI2CSgp41 sgp41;
 NOxGasIndexAlgorithm nox_algorithm;
 VOCGasIndexAlgorithm voc_algorithm;
+SHTSensor sht;
+
 // time in seconds needed for NOx conditioning
 uint16_t conditioning_s = 10;
 
@@ -103,9 +115,19 @@ const int co2Interval = 5000;
 unsigned long previousCo2 = 0;
 int Co2 = 0;
 
-const int pm25Interval = 5000;
-unsigned long previousPm25 = 0;
+// each interval, fetch 1/6th of the PM data so that each value only gets updated every 6th interval
+const int pmInterval = 2000;
+unsigned long previousPm = 0;
+int pmFetchIndex = 0;
 int pm25 = 0;
+int pm01 = 0;
+int pm10 = 0;
+int pm0_3PCount = 0;
+int pm0_5PCount = 0;
+int pm1_0PCount = 0;
+int pm2_5PCount = 0;
+int pm5_0PCount = 0;
+int pm10_0PCount = 0;
 
 const int tempHumInterval = 2500;
 unsigned long previousTempHum = 0;
@@ -199,21 +221,52 @@ void updateCo2() {
   }
 }
 
-void updatePm25() {
-  if (currentMillis - previousPm25 >= pm25Interval) {
-    previousPm25 += pm25Interval;
-    pm25 = ag.getPM2_Raw();
+void updatePm() {
+  if (currentMillis - previousPm >= pmInterval) {
+    previousPm += pmInterval;
+    switch (pmFetchIndex) {
+      case 0:
+        pm01 = ag.getPM1_Raw();
+        pm25 = ag.getPM2_Raw();
+        break;
+      case 1:
+        pm10 = ag.getPM10_Raw();
+        break;
+      case 2:
+        // Particulate matter per 0.1L air
+        pm0_3PCount = ag.getPM0_3Count();
+        pm0_5PCount = ag.getPM0_5Count();
+        break;
+      case 3:
+        pm1_0PCount = ag.getPM1_0Count();
+        pm2_5PCount = ag.getPM2_5Count();
+        break;
+      case 4:
+        pm5_0PCount = ag.getPM5_0Count();
+        break;
+      case 5:
+        pm10_0PCount = ag.getPM10_0Count();
+        break;
+      default:
+        pmFetchIndex=0;
+    }
+    if (++pmFetchIndex > 5) {
+      pmFetchIndex=0;
+    }
   }
 }
 
 void updateTempHum() {
   if (currentMillis - previousTempHum >= tempHumInterval) {
     previousTempHum += tempHumInterval;
-    TMP_RH result = ag.periodicFetchData();
-    tempc = result.t;
-    // convert from Celcius to Fahrenheit
-    tempf = (tempc * 9 / 5) + 32;
-    hum = result.rh;
+    if (sht.readSample()) {
+      tempc = sht.getTemperature();
+      // convert from Celcius to Fahrenheit
+      tempf = (tempc * 9 / 5) + 32;
+      hum = sht.getHumidity();
+    } else {
+      Serial.print("Error in readSample()\n");
+    }
   }
 }
 
@@ -369,6 +422,8 @@ void setup() {
   Serial.println("Hello");
   u8g2.setBusClock(100000);
   u8g2.begin();
+  sht.init();
+  sht.setAccuracy(SHTSensor::SHT_ACCURACY_MEDIUM);
 
   // Init Display.
   updateOLED2("Warming up the", "sensors.", "");
@@ -435,7 +490,7 @@ void loop() {
   currentMillis = millis();
   updateTVOC();
   updateCo2();
-  updatePm25();
+  updatePm();
   updateTempHum();
   updateOLED();
   server.handleClient();
@@ -454,12 +509,69 @@ String GenerateMetrics() {
     message += String(PM_TO_AQI_US(pm25));
     message += "\n";
 
+    message += "# HELP pm01 Particulate Matter PM1 value\n";
+    message += "# TYPE pm01 gauge\n";
+    message += "pm01";
+    message += idString;
+    message += String(pm01);
+    message += "\n";
+
     message += "# HELP pm025 Particulate Matter PM2.5 value\n";
     message += "# TYPE pm025 gauge\n";
     message += "pm025";
     message += idString;
     message += String(pm25);
     message += "\n";
+
+    message += "# HELP pm10 Particulate Matter PM10 value\n";
+    message += "# TYPE pm10 gauge\n";
+    message += "pm10";
+    message += idString;
+    message += String(pm10);
+    message += "\n";
+
+    message += "# HELP pm0_3cnt Particulate Matter PM0.3 count per .1L\n";
+    message += "# TYPE pm0_3cnt gauge\n";
+    message += "pm0_3cnt";
+    message += idString;
+    message += String(pm0_3PCount);
+    message += "\n";
+
+    message += "# HELP pm0_5cnt Particulate Matter PM0.5 count per .1L\n";
+    message += "# TYPE pm0_5cnt gauge\n";
+    message += "pm0_5cnt";
+    message += idString;
+    message += String(pm0_5PCount);
+    message += "\n";
+
+    message += "# HELP pm1_0cnt Particulate Matter PM1.0 count per .1L\n";
+    message += "# TYPE pm1_0cnt gauge\n";
+    message += "pm1_0cnt";
+    message += idString;
+    message += String(pm1_0PCount);
+    message += "\n";
+
+    message += "# HELP pm2_5cnt Particulate Matter PM2.5 count per .1L\n";
+    message += "# TYPE pm2_5cnt gauge\n";
+    message += "pm2_5cnt";
+    message += idString;
+    message += String(pm2_5PCount);
+    message += "\n";
+
+    message += "# HELP pm5_0cnt Particulate Matter PM5.0 count per .1L\n";
+    message += "# TYPE pm5_0cnt gauge\n";
+    message += "pm5_0cnt";
+    message += idString;
+    message += String(pm5_0PCount);
+    message += "\n";
+
+    message += "# HELP pm10_0cnt Particulate Matter PM10.0 count per .1L\n";
+    message += "# TYPE pm10_0cnt gauge\n";
+    message += "pm10_0cnt";
+    message += idString;
+    message += String(pm10_0PCount);
+    message += "\n";
+
   }
 
   if (hasSGP41 && NOX >= 0) {
