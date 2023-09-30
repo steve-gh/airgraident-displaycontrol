@@ -83,6 +83,8 @@ IPAddress subnet(255, 255, 255, 0);
 // Max age in ms that a custom display will show up without changes
 const int customDisplayMaxAge = 60 * 60 * 1000; // 1 hour
 
+#define DEBUG 0
+
 // Constants for the Arduino-built screens
 // Width of the text characters
 #define WIDTH_TEXT 6
@@ -97,10 +99,18 @@ const int customDisplayMaxAge = 60 * 60 * 1000; // 1 hour
 #define ROW2_Y 42
 #define ROW3_Y 63
 
+
+#define SHOW_SCREEN_SCREEN1 0x1
+#define SHOW_SCREEN_SCREEN2 0x2
+#define SHOW_SCREEN_CUSTOM 0x4
+
 // Config End ------------------------------------------------------------------
 
 unsigned long currentMillis = 0;
 unsigned long display_last_set = 0;
+
+// Binary OR of the screens, enabling screen1, screen2, and custom
+uint8_t showScreens = 0x7;
 
 // not const, this can be overridden via console.
 unsigned int oledInterval = 5000;
@@ -191,7 +201,7 @@ void updateTVOC() {
   if (currentMillis - previousTVOC >= tvocInterval) {
     previousTVOC += tvocInterval;
     if (conditioning_s > 0) {
-      Serial.print("TVOC Conditioning: " + conditioning_s);
+      Serial.println("TVOC Conditioning: " + conditioning_s);
       error = sgp41.executeConditioning(compensationRh, compensationT, srawVoc);
       if (error) {
         Serial.print("Error trying to execute executeConditioning(): ");
@@ -369,8 +379,30 @@ void drawScreen2() {
 void updateOLED() {
   if (currentMillis - previousOled >= oledInterval) {
     previousOled += oledInterval;
-    displayCycle = (displayCycle + 1) % 4;
-    Serial.println("Updating Screen: " + String(displayCycle));
+    if ((showScreens & 0x7) == 0) {
+      // No screens to show.
+      return;
+    }
+    bool found_miss = true;
+    while (found_miss) {
+      displayCycle = (displayCycle + 1) % 4;
+      if ((showScreens & SHOW_SCREEN_CUSTOM) == 0 && (displayCycle == 1 || displayCycle == 3)) {
+        found_miss = true;
+        continue;
+      }
+      if ((showScreens & SHOW_SCREEN_SCREEN2) == 0 && (displayCycle == 2)) {
+        found_miss = true;
+        continue;
+      }
+      if ((showScreens & SHOW_SCREEN_SCREEN1) == 0 && (displayCycle == 0)) {
+        found_miss = true;
+        continue;
+      }
+      found_miss = false;
+    }
+    if (DEBUG) {
+      Serial.println("Updating Screen: " + String(displayCycle) + " showScreens:" + String(showScreens) );
+    }
     // 0 = display summary. 1 = displayActive. 2 = summary #2 (if does not
     // exist, go back to 0).  3 = displayActive
     if (displayCycle == 1 || displayCycle == 3) {
@@ -677,6 +709,21 @@ void HandleDisplaySet() {
   }
   if (server.hasArg("oledInterval")) {
     oledInterval = atoi(server.arg("oledInterval").c_str());
+  }
+  if (server.hasArg("showScreens")) {
+    // binary map
+    // xx1b -> show base screen
+    // x1xb -> show second screen
+    // 1xxb -> show custom screens
+    showScreens = atoi(server.arg("showScreens").c_str());
+  }
+  if (server.hasArg("oledPowerSave")) {
+    int oledPowerSave = atoi(server.arg("oledPowerSave").c_str());
+    if (oledPowerSave >= 1) {
+      u8g2.setPowerSave(1);
+    } else {
+      u8g2.setPowerSave(0);
+    }
   }
   server.send(200, "text/html", "Thank you.\n");
 }
